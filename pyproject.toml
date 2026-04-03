@@ -1,0 +1,96 @@
+[build-system]
+requires = ["setuptools>=61"]
+
+[project]
+name = "genro-daemon"
+dynamic = ['version']
+
+authors = [
+	{ name = "Softwell Srl", email = "info@softwell.it" },
+]
+
+description = "Genropy Web Framework Daemon"
+
+maintainers = [
+  { name = "Softwell Srl", email = "info@softwell.it" }	    
+]
+keywords = ["web", "framework", "session", "daemon"]
+license = { file = "LICENSE" }
+
+requires-python = ">=3.11"
+
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Typing :: Typed",
+    "License :: OSI Approved :: Apache Software License"
+]
+
+dependencies = [
+    "genropy >= 26.04.01",
+    "msgpack",
+    "uvloop"
+]
+
+[project.optional-dependencies]
+redis = ["redis>=5.0"]
+prometheus = ["prometheus-client>=0.16.0"]
+
+[project.entry-points."gnr.web"]
+daemon = "genro_daemon"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = true
+
+[tool.setuptools.dynamic]
+version = {attr = "genro_daemon.VERSION"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+timeout = 30
+
+
+[tool.coverage.run]
+source = ["genro_daemon"]
+omit = []
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
+[tool.ruff]
+exclude = [ ]
+line-length = 88
+indent-width = 4
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "W", "B", "I", "UP"]
+ignore = [
+    "B904",   # raise-without-from-inside-except — too noisy for legacy code
+    "UP007",  # use X | Y for union types — requires runtime 3.10+
+]
+fixable = ["ALL"]
+unfixable = []
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
