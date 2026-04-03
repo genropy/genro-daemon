@@ -117,9 +117,7 @@ class TestLoadDaemonOptions:
 
     def test_env_var_host_overrides_xml(self, monkeypatch):
         monkeypatch.setenv("GNR_DAEMON_HOST", "envhost")
-        patches, _ = self._patch_gnr(
-            env_options={"host": "xmlhost", "port": "40404"}
-        )
+        patches, _ = self._patch_gnr(env_options={"host": "xmlhost", "port": "40404"})
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             from genro_daemon.utils import load_daemon_options
 
@@ -128,9 +126,7 @@ class TestLoadDaemonOptions:
 
     def test_env_var_port_overrides_xml(self, monkeypatch):
         monkeypatch.setenv("GNR_DAEMON_PORT", "9999")
-        patches, _ = self._patch_gnr(
-            env_options={"host": "localhost", "port": "40404"}
-        )
+        patches, _ = self._patch_gnr(env_options={"host": "localhost", "port": "40404"})
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             from genro_daemon.utils import load_daemon_options
 
@@ -139,9 +135,7 @@ class TestLoadDaemonOptions:
 
     def test_env_var_bind_sets_bind_key(self, monkeypatch):
         monkeypatch.setenv("GNR_DAEMON_BIND", "0.0.0.0")
-        patches, _ = self._patch_gnr(
-            env_options={"host": "localhost", "port": "40404"}
-        )
+        patches, _ = self._patch_gnr(env_options={"host": "localhost", "port": "40404"})
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             from genro_daemon.utils import load_daemon_options
 
@@ -150,9 +144,7 @@ class TestLoadDaemonOptions:
 
     def test_cli_option_overrides_env_var(self, monkeypatch):
         monkeypatch.setenv("GNR_DAEMON_HOST", "envhost")
-        patches, _ = self._patch_gnr(
-            env_options={"host": "xmlhost", "port": "40404"}
-        )
+        patches, _ = self._patch_gnr(env_options={"host": "xmlhost", "port": "40404"})
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             from genro_daemon.utils import load_daemon_options
 

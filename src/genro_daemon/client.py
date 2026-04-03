@@ -112,9 +112,7 @@ class GnrDaemonClient:
             or parsed_url.hostname
         )
         self._port = int(
-            options.get("port")
-            or os.environ.get("GNR_DAEMON_PORT")
-            or parsed_url.port
+            options.get("port") or os.environ.get("GNR_DAEMON_PORT") or parsed_url.port
         )
         self._timeout = timeout
         self._req_counter = 0
