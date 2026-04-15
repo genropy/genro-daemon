@@ -37,13 +37,14 @@ class TestConnectivity:
         for _ in range(10):
             assert daemon_client.ping() == "pong"
 
-    def test_connection_error_returns_none(self):
-        """Calling a client pointing at a dead port returns None gracefully."""
+    def test_connection_error_raises(self):
+        """Calling a client pointing at a dead port raises ConnectionError."""
+        import pytest
         from genro_daemon.client import GnrDaemonClient
 
         c = GnrDaemonClient("gnr://127.0.0.1:1", timeout=0.5)
-        result = c.ping()
-        assert result is None
+        with pytest.raises(ConnectionError, match="No response from daemon"):
+            c.ping()
 
 
 # ---------------------------------------------------------------------------

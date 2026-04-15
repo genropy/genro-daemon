@@ -90,11 +90,11 @@ class TestInvokeMethod:
             with pytest.raises(Exception, match="no details"):
                 self.client._invoke_method("some_method")
 
-    def test_send_returns_none_invoke_returns_none(self):
-        """When _send returns None (connection error), _invoke_method returns None."""
+    def test_send_returns_none_invoke_raises_connection_error(self):
+        """When _send returns None (connection error), _invoke_method raises ConnectionError."""
         with self._patch_send(None):
-            result = self.client._invoke_method("ping")
-        assert result is None
+            with pytest.raises(ConnectionError, match="No response from daemon"):
+                self.client._invoke_method("ping")
 
     def test_sitename_injected_when_set(self):
         self.client._sitename = "mysite"
