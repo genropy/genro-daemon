@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
+from genro_daemon.client import GnrDaemonClient
 from genro_daemon.exceptions import GnrDaemonMethodNotFound
 from genro_daemon.storage.memory import InMemoryBackend
 
@@ -39,9 +40,6 @@ class TestConnectivity:
 
     def test_connection_error_raises(self):
         """Calling a client pointing at a dead port raises ConnectionError."""
-        import pytest
-        from genro_daemon.client import GnrDaemonClient
-
         c = GnrDaemonClient("gnr://127.0.0.1:1", timeout=0.5)
         with pytest.raises(ConnectionError, match="No response from daemon"):
             c.ping()

@@ -2,6 +2,7 @@
 
 import asyncio
 import socket
+import threading
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -239,7 +240,7 @@ def _sync_call(host, port, request, timeout=3):
 
 @pytest.fixture()
 def ars_runner():
-    import threading
+
 
     ars = SimpleArs()
     port = find_free_port()
