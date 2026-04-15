@@ -430,6 +430,7 @@ class SiteRegisterClient:
                 self._add_data_to_register_item(c) if lazy_data else c
             )
             for c in lst
+            if c is not None
         }
 
     def _add_data_to_register_item(self, register_item):

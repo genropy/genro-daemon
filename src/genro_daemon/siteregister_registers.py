@@ -228,11 +228,17 @@ class PageRegister(BaseRegister):
 
     def subscribed_table_page_items(self, table: str) -> list[tuple[str, dict]]:
         return [
-            (k, self.get_item(k)) for k in self._subscribed_table_index.get(table, [])
+            (k, item)
+            for k in self._subscribed_table_index.get(table, [])
+            if (item := self.get_item(k)) is not None
         ]
 
     def subscribed_table_pages(self, table: str) -> list[dict]:
-        return [self.get_item(x) for x in self._subscribed_table_index.get(table, [])]
+        return [
+            item
+            for x in self._subscribed_table_index.get(table, [])
+            if (item := self.get_item(x)) is not None
+        ]
 
     def connection_page_keys(self, connection_id: str) -> list[str]:
         return [
@@ -259,18 +265,21 @@ class PageRegister(BaseRegister):
         """Return pages filtered by connection, user, and/or an ad-hoc filter string."""
         if connection_id and not user:
             pages = [
-                self.get_item(x["register_item_id"], include_data=include_data)
+                item
                 for x in self._multi_indexes["connection_id"][connection_id]
+                if (item := self.get_item(x["register_item_id"], include_data=include_data)) is not None
             ]
         elif user and not connection_id:
             pages = [
-                self.get_item(x["register_item_id"], include_data=include_data)
+                item
                 for x in self._multi_indexes["user"][user]
+                if (item := self.get_item(x["register_item_id"], include_data=include_data)) is not None
             ]
         elif connection_id and user:
             pages = [
-                self.get_item(x["register_item_id"], include_data=include_data)
+                item
                 for x in self._multi_indexes["connection_id"][connection_id]
+                if (item := self.get_item(x["register_item_id"], include_data=include_data)) is not None
             ]
             pages = list(filter(lambda x: x["user"] == user, pages))
         else:

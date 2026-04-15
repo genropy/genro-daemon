@@ -226,6 +226,17 @@ class GnrDaemonClient:
                 response = self._recv(sock)
             self._pool.release(sock)
             return response
+        except msgpack.exceptions.ExtraData as e:
+            # Two responses landed in one recv() call — the socket is out of sync.
+            # Discard it so it never goes back into the pool, but the first
+            # (correctly decoded) response is in e.unpacked and is still valid.
+            if sock is not None:
+                self._pool.discard(sock)
+            logger.warning(
+                "Extra response bytes from daemon at %s:%d; socket discarded.",
+                self._host, self._port,
+            )
+            return e.unpacked
         except Exception as e:
             if sock is not None:
                 self._pool.discard(sock)

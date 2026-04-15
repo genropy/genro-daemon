@@ -39,7 +39,7 @@ DEFAULT_CLEANUP_INTERVAL: int = 120
 DEFAULT_PAGE_MAX_AGE: int = 120
 DEFAULT_GUEST_CONNECTION_MAX_AGE: int = 40
 DEFAULT_CONNECTION_MAX_AGE: int = 600
-DEFAULT_IDLE_OFFLOAD_AGE: int = 10  # 1800
+DEFAULT_IDLE_OFFLOAD_AGE: int = 10800  # 3 hours
 
 LOCK_MAX_RETRY: int = 50
 LOCK_EXPIRY_SECONDS: int = 10
@@ -297,15 +297,17 @@ class BaseRegister:
     # ------------------------------------------------------------------
 
     def drop_multi_indexes(self, register_item: dict) -> None:
-        """Remove *register_item* from all secondary indexes."""
+        """Remove *register_item* from all secondary indexes.
+
+        Matches by ``register_item_id`` rather than dict equality so that
+        recharged (pickle-roundtripped) dicts are removed correctly.
+        """
+        rid = register_item.get("register_item_id")
         for x in self.multi_index_attrs:
             key = register_item.get(x)
             idx_list = self._multi_indexes[x].get(key)
             if idx_list is not None:
-                try:
-                    idx_list.remove(register_item)
-                except ValueError:
-                    pass
+                idx_list[:] = [e for e in idx_list if e.get("register_item_id") != rid]
 
     def reindex_multi_index(self, index_name: str) -> None:
         """Rebuild the secondary index for *index_name* from scratch."""
@@ -430,9 +432,9 @@ class BaseRegister:
         self, register_item_id: str, include_data: bool = False
     ) -> dict | None:
         """Return the register item dict, optionally embedding its live data Bag."""
-        item = self.registerItems.get(
-            register_item_id, self._charge_item(register_item_id)
-        )
+        item = self.registerItems.get(register_item_id)
+        if item is None:
+            item = self._charge_item(register_item_id)
         self.updateTS(register_item_id)
         if item and include_data:
             item["data"] = self.get_item_data(register_item_id)
@@ -490,11 +492,17 @@ class BaseRegister:
     def drop_item(self, register_item_id: str) -> dict | None:
         """Remove *register_item_id* from this register and from all storage."""
         register_item = self.registerItems.pop(register_item_id, None)
+        if register_item is None:
+            # Check in-memory cold store
+            register_item = self.offloaded_items.pop(register_item_id, None)
+        if register_item is None and self._persist_dir:
+            # Item was offloaded to disk; load it just to get its attributes
+            # so we can clean up the multi-indexes correctly.
+            result = self._load_item_from_disk(register_item_id)
+            if result:
+                register_item = result[0]
         if register_item:
             self.drop_multi_indexes(register_item)
-        else:
-            # May be in in-memory cold store or disk cold store
-            register_item = self.offloaded_items.pop(register_item_id, None)
         self.offloaded_items.pop(register_item_id, None)
         self.itemsData.pop(register_item_id, None)
         self.itemsTS.pop(register_item_id, None)
@@ -553,9 +561,19 @@ class BaseRegister:
             if ts is not None:
                 self.itemsTS[register_item_id] = ts
             self._setup_live_fields(item, existing_data=data)
+            # Update the existing multi-index entry in-place rather than appending.
+            # offload_item() keeps the item in the index, so we only need to swap
+            # the (now-stale) dict reference with the freshly loaded one.
             for k in self.multi_index_attrs:
                 if k in item:
-                    self._multi_indexes[k][item[k]].append(item)
+                    idx_list = self._multi_indexes[k].get(item[k], [])
+                    for i_idx, entry in enumerate(idx_list):
+                        if entry.get("register_item_id") == register_item_id:
+                            idx_list[i_idx] = item
+                            break
+                    else:
+                        # Not in index yet (e.g. first load after daemon restart)
+                        self._multi_indexes[k][item[k]].append(item)
             self._delete_item_from_disk(register_item_id)
             logger.debug("Charged item %s in %s from disk", register_item_id, self._ns)
             return item

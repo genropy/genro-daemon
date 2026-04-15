@@ -59,7 +59,7 @@ class Ars:
     RES = 1
 
     _timeout = 3  # coroutine / idle timeout (seconds)
-    _recv_timeout = 10  # TCP receive timeout per chunk (seconds)
+    _recv_timeout = 60  # TCP receive timeout per chunk (seconds)
     _send_timeout = 60  # drain timeout for outgoing responses (seconds)
     _packer_parms = dict(default=_msgpack_default, use_bin_type=True)
 
@@ -107,8 +107,10 @@ class Ars:
                 try:
                     reqs = await connection.recv(self._recv_timeout)
                 except TimeoutError:
-                    await asyncio.sleep(2)
-                    logger.warning("Not receiving data from client.")
+                    logger.debug(
+                        "Idle connection from %s timed out after %ds, closing.",
+                        connection.peer, self._recv_timeout,
+                    )
                     connection.close()
                     await channel_out.wait_closed()
                     continue
