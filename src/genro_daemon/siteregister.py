@@ -25,6 +25,7 @@ from .siteregister_base import (
     DEFAULT_CLEANUP_INTERVAL,
     DEFAULT_CONNECTION_MAX_AGE,
     DEFAULT_GUEST_CONNECTION_MAX_AGE,
+    DEFAULT_IDLE_OFFLOAD_AGE,
     DEFAULT_PAGE_MAX_AGE,
     LOCK_EXPIRY_SECONDS,
     LOCK_MAX_RETRY,
@@ -56,6 +57,7 @@ __all__ = [
     "DEFAULT_CLEANUP_INTERVAL",
     "DEFAULT_CONNECTION_MAX_AGE",
     "DEFAULT_GUEST_CONNECTION_MAX_AGE",
+    "DEFAULT_IDLE_OFFLOAD_AGE",
     "DEFAULT_PAGE_MAX_AGE",
     "LOCK_EXPIRY_SECONDS",
     "LOCK_MAX_RETRY",
@@ -87,6 +89,7 @@ class GnrSiteRegister:
         sitename: str | None = None,
         storage_path: str | None = None,
         backend: StorageBackend | None = None,
+        persist_dir: str | None = None,
     ) -> None:
         self.server = server
         self._backend = backend
@@ -96,10 +99,19 @@ class GnrSiteRegister:
             self, backend=backend, sitename=sitename
         )
         self.user_register = UserRegister(self, backend=backend, sitename=sitename)
+        if persist_dir:
+            for reg in (
+                self.global_register,
+                self.user_register,
+                self.connection_register,
+                self.page_register,
+            ):
+                reg.set_persist_dir(persist_dir)
         self.remotebag_handler = RemoteStoreBagHandler(self)
         self.last_cleanup = time.time()
         self.sitename = sitename
         self.storage_path = storage_path
+        self.persist_dir = persist_dir
         self.catalog = GnrClassCatalog()
         self.maintenance = False
         self.allowed_users: list[str] | None = None
@@ -127,6 +139,11 @@ class GnrSiteRegister:
 
         Called once after creation (with values from ``environment.xml``) and
         may be called again to hot-reload configuration without a restart.
+
+        Idle-offload parameters (in-memory backend only):
+        - ``idle_offload_age``: seconds of inactivity before an item is
+          offloaded to disk.  ``0`` disables idle offloading (default when no
+          persist directory is configured; otherwise ``DEFAULT_IDLE_OFFLOAD_AGE``).
         """
         cleanup = cleanup or dict()
         self.cleanup_interval: int = int(
@@ -138,6 +155,17 @@ class GnrSiteRegister:
         )
         self.connection_max_age: int = int(
             cleanup.get("connection_max_age", DEFAULT_CONNECTION_MAX_AGE)
+        )
+        default_offload_age = DEFAULT_IDLE_OFFLOAD_AGE if self.persist_dir else 0
+        self.idle_offload_age: int = int(
+            cleanup.get("idle_offload_age", default_offload_age)
+        )
+        logger.info(
+            "Site %s: persist_dir=%s idle_offload_age=%ds cleanup_interval=%ds",
+            self.sitename,
+            self.persist_dir,
+            self.idle_offload_age,
+            self.cleanup_interval,
         )
 
     # ------------------------------------------------------------------
@@ -463,7 +491,27 @@ class GnrSiteRegister:
                 m.cleanup_evictions_total.labels(
                     sitename=self.sitename, register="connection"
                 ).inc(len(dropped_connections))
+        if self.idle_offload_age > 0:
+            self._offload_idle()
         return dropped_connections
+
+    def _offload_idle(self) -> None:
+        """Offload items that have not been accessed for *idle_offload_age* seconds."""
+        for reg in (
+            self.page_register,
+            self.connection_register,
+            self.user_register,
+            self.global_register,
+        ):
+            count = len(reg.registerItems)
+            offloaded = reg.offload_idle_items(self.idle_offload_age)
+            logger.info(
+                "Site %s: %s checked %d items, offloaded %d",
+                self.sitename,
+                reg.registerName,
+                count,
+                len(offloaded),
+            )
 
     # ------------------------------------------------------------------
     # Generic item access
@@ -540,6 +588,47 @@ class GnrSiteRegister:
             return True
         except EOFError:
             return False
+
+    def dump_memory(self) -> None:
+        """Persist every in-memory register item to disk as individual pickle files.
+
+        Called on daemon shutdown when using the in-memory backend so that
+        session state survives a restart.  No-op when no persist directory is
+        configured (e.g. Redis backend).
+        """
+        if not self.persist_dir:
+            return
+        for reg in (
+            self.global_register,
+            self.user_register,
+            self.connection_register,
+            self.page_register,
+        ):
+            count = reg.dump_all_to_disk()
+            logger.info("Dumped %d item(s) from %s to disk", count, reg.registerName)
+
+    def load_memory(self) -> None:
+        """Restore in-memory register items from per-item disk pickle files.
+
+        Called on daemon startup when using the in-memory backend.  Items are
+        loaded into the hot ``registerItems`` dict; disk files are removed after
+        loading (the daemon will re-dump on next stop).  No-op when no persist
+        directory is configured.
+        """
+        if not self.persist_dir:
+            return
+        for reg in (
+            self.global_register,
+            self.user_register,
+            self.connection_register,
+            self.page_register,
+        ):
+            count = reg.load_all_from_disk()
+            if count:
+                logger.info(
+                    "Loaded %d item(s) into %s from disk", count, reg.registerName
+                )
+        self._sync_metrics()
 
     def _sync_metrics(self) -> None:
         """Reset register gauges to match actual item counts (called after load)."""

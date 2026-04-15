@@ -1,6 +1,7 @@
 import asyncio
 import os
 import os.path
+import time
 
 import uvloop
 
@@ -14,6 +15,7 @@ from .ars import Ars  # noqa: E402
 from .client import GnrDaemonClient  # noqa: E402
 from .siteregister import GnrSiteRegister  # noqa: E402
 from .storage import get_backend  # noqa: E402
+from .storage.memory import InMemoryBackend  # noqa: E402
 
 
 class GnrSiteRegisterServer(Ars):
@@ -59,6 +61,7 @@ class GnrSiteRegisterServer(Ars):
         storage_path = os.path.join(sitepath, "siteregister_data.pik")
         storage_backend = sitedaemonconfig.get("storage_backend", "memory")
         redis_config = siteconfig.getAttr("redis") or {}
+        persist_dir = os.path.join(sitepath, "siteregister_offload")
         self._config.update(
             debug=debug,
             host=host,
@@ -67,6 +70,7 @@ class GnrSiteRegisterServer(Ars):
             storage_path=storage_path,
             storage_backend=storage_backend,
             redis=redis_config,
+            persist_dir=persist_dir,
         )
 
     def running(self):
@@ -80,6 +84,7 @@ class GnrSiteRegisterServer(Ars):
             logger.info(f"Saving status into {self.storage_path}")
             self.siteregister.dump()
             logger.info("Completed status saving")
+        self.siteregister.dump_memory()
         self._running = False
         super().stop(reason=reason)
 
@@ -87,6 +92,7 @@ class GnrSiteRegisterServer(Ars):
         self._running = True
         if autorestore:
             self.siteregister.load()
+        self.siteregister.load_memory()
         logger.info(f"Starting site daemon for {self.sitename}")
         super().start(**self._config)
 
@@ -103,11 +109,19 @@ class GnrSiteRegisterServer(Ars):
         **kwargs,
     ):
         backend = get_backend(self._config, sitename=self.sitename)
+        # Disk persistence is only meaningful for the in-memory backend;
+        # Redis already persists data server-side.
+        persist_dir = (
+            self._config.get("persist_dir")
+            if isinstance(backend, InMemoryBackend)
+            else None
+        )
         self.siteregister = GnrSiteRegister(
             self,
             sitename=self.sitename,
             storage_path=self.storage_path,
             backend=backend,
+            persist_dir=persist_dir,
         )
 
         autorestore = autorestore and os.path.exists(self.storage_path or "")
@@ -170,3 +184,37 @@ class GnrSiteRegisterServer(Ars):
 
     def ping(self, **kwargs):
         return "pong"
+
+    async def _periodic_cleanup(self):
+        """Background task: call siteregister.cleanup() on its own interval.
+
+        This ensures idle offloading and stale-item eviction run even when the
+        Genropy framework process is not actively sending cleanup calls (e.g.
+        during low-traffic periods or standalone testing).
+        """
+        # Poll frequently; cleanup() itself is gated by cleanup_interval
+        poll_interval = 10
+        while self._running:
+            await asyncio.sleep(poll_interval)
+            if not self._running:
+                break
+            try:
+                sr = self.__dict__.get("siteregister")
+                if sr is not None and hasattr(sr, "cleanup_interval"):
+                    sr.cleanup()
+            except Exception:
+                logger.warning(
+                    "Periodic cleanup error for %s", self.sitename, exc_info=True
+                )
+
+    async def _start_server(self, *args, **kwargs):
+        """Override to launch the periodic cleanup task alongside the TCP server."""
+        cleanup_task = asyncio.create_task(self._periodic_cleanup())
+        try:
+            await super()._start_server(*args, **kwargs)
+        finally:
+            cleanup_task.cancel()
+            try:
+                await cleanup_task
+            except asyncio.CancelledError:
+                pass

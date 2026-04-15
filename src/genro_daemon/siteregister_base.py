@@ -7,6 +7,7 @@ This module is internal.  Public consumers should import from
 from __future__ import annotations
 
 import datetime
+import os
 import pickle
 import time
 from collections import defaultdict
@@ -38,6 +39,7 @@ DEFAULT_CLEANUP_INTERVAL: int = 120
 DEFAULT_PAGE_MAX_AGE: int = 120
 DEFAULT_GUEST_CONNECTION_MAX_AGE: int = 40
 DEFAULT_CONNECTION_MAX_AGE: int = 600
+DEFAULT_IDLE_OFFLOAD_AGE: int = 10 #1800
 
 LOCK_MAX_RETRY: int = 50
 LOCK_EXPIRY_SECONDS: int = 10
@@ -82,6 +84,7 @@ class BaseRegister:
             if sitename
             else self.__class__.__name__
         )
+        self._persist_dir: str | None = None
         self._reset_all_registers()
 
     # ------------------------------------------------------------------
@@ -95,13 +98,20 @@ class BaseRegister:
         storable = {k: v for k, v in item.items() if k not in _LIVE_FIELDS}
         self._backend.hset(self._ns, str(register_item_id), storable)
 
-    def _setup_live_fields(self, item: dict) -> None:
-        """Add live fields to a backend-loaded register item and create its itemsData Bag."""
+    def _setup_live_fields(
+        self, item: dict, existing_data: Bag | None = None
+    ) -> None:
+        """Add live fields to a register item and wire its itemsData Bag.
+
+        *existing_data* may be passed when restoring a previously persisted item
+        so that its content is preserved while the change subscription is
+        re-attached (subscriptions do not survive pickling).
+        """
         register_item_id = item["register_item_id"]
         item.setdefault("datachanges", list())
         item.setdefault("datachanges_idx", 0)
         item.setdefault("subscribed_paths", set())
-        data = Bag()
+        data = existing_data if existing_data is not None else Bag()
         data.subscribe(
             "datachanges",
             any=lambda **kwargs: self._on_data_trigger(register_item=item, **kwargs),
@@ -130,6 +140,161 @@ class BaseRegister:
                     if k in item:
                         self._multi_indexes[k][item[k]].append(item)
                 self._setup_live_fields(item)
+
+    # ------------------------------------------------------------------
+    # Disk persistence (idle offloading / restart survival)
+    # ------------------------------------------------------------------
+
+    def set_persist_dir(self, path: str) -> None:
+        """Set the directory used for on-disk item persistence and create it."""
+        self._persist_dir = path
+        ns_dir = self._ns.replace(":", "_")
+        os.makedirs(os.path.join(path, ns_dir), exist_ok=True)
+
+    def _item_persist_path(self, register_item_id: str) -> str:
+        ns_dir = self._ns.replace(":", "_")
+        return os.path.join(self._persist_dir, ns_dir, f"{register_item_id}.pkl")
+
+    def _persist_item_to_disk(self, register_item_id: str, item: dict) -> None:
+        """Atomically write *item* + its Bag data to a per-item pickle file."""
+        path = self._item_persist_path(register_item_id)
+        storable_item = {k: v for k, v in item.items() if k not in _LIVE_FIELDS}
+        data = self.itemsData.get(register_item_id)
+        ts = self.itemsTS.get(register_item_id)
+        payload = {"item": storable_item, "data": data, "ts": ts}
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "wb") as f:
+                pickle.dump(payload, f)
+            os.replace(tmp, path)  # atomic on POSIX
+        except Exception:
+            logger.warning(
+                "Failed to persist item %s of %s to disk",
+                register_item_id,
+                self._ns,
+                exc_info=True,
+            )
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+    def _load_item_from_disk(
+        self, register_item_id: str
+    ) -> tuple[dict, Bag | None, datetime.datetime | None] | None:
+        """Load a previously persisted item from disk.
+
+        Returns ``(item_dict, bag_data, ts)`` or ``None`` if the file is absent
+        or corrupt.
+        """
+        path = self._item_persist_path(register_item_id)
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path, "rb") as f:
+                payload = pickle.load(f)
+            return payload.get("item"), payload.get("data"), payload.get("ts")
+        except Exception:
+            logger.warning(
+                "Failed to load item %s of %s from disk",
+                register_item_id,
+                self._ns,
+                exc_info=True,
+            )
+            return None
+
+    def _delete_item_from_disk(self, register_item_id: str) -> None:
+        path = self._item_persist_path(register_item_id)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+    def offload_idle_items(self, max_age_seconds: int) -> list[str]:
+        """Offload items in *registerItems* that have not been accessed recently.
+
+        The last-access time is taken from ``itemsTS`` when available (updated
+        by every ``get_item()`` call).  For items that have never been fetched
+        via ``get_item()`` — e.g. pages that are only ever refreshed — the
+        item's own ``last_refresh_ts`` or ``start_ts`` field is used as a
+        fallback so they are not excluded from offloading indefinitely.
+
+        Only active when *max_age_seconds* > 0 and a persist directory is set.
+        Returns the list of offloaded item IDs.
+        """
+        if not self._persist_dir or max_age_seconds <= 0:
+            return []
+        now = datetime.datetime.now()
+        offloaded = []
+        for register_item_id in list(self.registerItems.keys()):
+            ts = self.itemsTS.get(register_item_id)
+            if ts is None:
+                # Fall back to the item's own refresh / creation timestamp
+                item = self.registerItems.get(register_item_id)
+                if item:
+                    ts = item.get("last_refresh_ts") or item.get("start_ts")
+            if ts and (now - ts).total_seconds() > max_age_seconds:
+                self.offload_item(register_item_id)
+                offloaded.append(register_item_id)
+        if offloaded:
+            logger.debug(
+                "Offloaded %d idle item(s) from %s", len(offloaded), self._ns
+            )
+        return offloaded
+
+    def dump_all_to_disk(self) -> int:
+        """Persist every live item (hot + in-memory cold) to disk.
+
+        Used on daemon shutdown so items survive a restart.  Returns the number
+        of items written.
+        """
+        if not self._persist_dir:
+            return 0
+        count = 0
+        for register_item_id, item in list(self.registerItems.items()):
+            self._persist_item_to_disk(register_item_id, item)
+            count += 1
+        for register_item_id, item in list(self.offloaded_items.items()):
+            if item and not os.path.exists(self._item_persist_path(register_item_id)):
+                self._persist_item_to_disk(register_item_id, item)
+                count += 1
+        return count
+
+    def load_all_from_disk(self) -> int:
+        """Load all per-item pickle files into *registerItems*.
+
+        Called on daemon startup with an in-memory backend so that state from
+        the previous run is restored.  Disk files are removed after loading
+        (the daemon will re-dump them on next stop).  Returns the number of
+        items loaded.
+        """
+        if not self._persist_dir:
+            return 0
+        ns_dir = self._ns.replace(":", "_")
+        dir_path = os.path.join(self._persist_dir, ns_dir)
+        if not os.path.isdir(dir_path):
+            return 0
+        count = 0
+        for filename in os.listdir(dir_path):
+            if not filename.endswith(".pkl"):
+                continue
+            register_item_id = filename[:-4]
+            result = self._load_item_from_disk(register_item_id)
+            if result is None:
+                continue
+            item, data, ts = result
+            if item is None:
+                continue
+            self.registerItems[register_item_id] = item
+            if ts is not None:
+                self.itemsTS[register_item_id] = ts
+            self._setup_live_fields(item, existing_data=data)
+            for k in self.multi_index_attrs:
+                if k in item:
+                    self._multi_indexes[k][item[k]].append(item)
+            self._delete_item_from_disk(register_item_id)
+            count += 1
+        return count
 
     # ------------------------------------------------------------------
     # Multi-index management
@@ -327,28 +492,80 @@ class BaseRegister:
         return self.__class__.__name__
 
     def drop_item(self, register_item_id: str) -> dict | None:
-        """Remove *register_item_id* from this register and from the backend."""
+        """Remove *register_item_id* from this register and from all storage."""
         register_item = self.registerItems.pop(register_item_id, None)
         if register_item:
             self.drop_multi_indexes(register_item)
+        else:
+            # May be in in-memory cold store or disk cold store
+            register_item = self.offloaded_items.pop(register_item_id, None)
+        self.offloaded_items.pop(register_item_id, None)
         self.itemsData.pop(register_item_id, None)
         self.itemsTS.pop(register_item_id, None)
         if self._backend:
             self._backend.hdel(self._ns, str(register_item_id))
+        if self._persist_dir:
+            self._delete_item_from_disk(register_item_id)
         return register_item
 
     def offload_item(self, register_item_id: str) -> None:
-        """Move *register_item_id* out of the hot dict into cold storage."""
-        self.offloaded_items[register_item_id] = self.registerItems.pop(
-            register_item_id, None
-        )
+        """Move *register_item_id* out of the hot dict into cold storage.
+
+        When a persist directory is configured the item is written to disk and
+        removed from memory entirely (disk is the cold store).  Otherwise the
+        existing in-memory ``offloaded_items`` dict is used.
+        """
+        item = self.registerItems.pop(register_item_id, None)
+        if item is None:
+            return
+        if self._persist_dir:
+            self._persist_item_to_disk(register_item_id, item)
+            self.itemsData.pop(register_item_id, None)
+            logger.debug(
+                "Offloaded item %s from %s to disk", register_item_id, self._ns
+            )
+        else:
+            self.offloaded_items[register_item_id] = item
+            logger.debug(
+                "Offloaded item %s from %s to in-memory cold store",
+                register_item_id,
+                self._ns,
+            )
 
     def _charge_item(self, register_item_id: str) -> dict | None:
-        """Restore a previously offloaded item back into the hot dict."""
+        """Restore a previously offloaded item back into the hot dict.
+
+        Checks in-memory cold store first, then disk (when persist dir is set).
+        """
         i = self.offloaded_items.pop(register_item_id, None)
         if i:
             self.registerItems[register_item_id] = i
-        return i
+            logger.debug(
+                "Charged item %s in %s from in-memory cold store",
+                register_item_id,
+                self._ns,
+            )
+            return i
+        if self._persist_dir:
+            result = self._load_item_from_disk(register_item_id)
+            if result is None:
+                return None
+            item, data, ts = result
+            if item is None:
+                return None
+            self.registerItems[register_item_id] = item
+            if ts is not None:
+                self.itemsTS[register_item_id] = ts
+            self._setup_live_fields(item, existing_data=data)
+            for k in self.multi_index_attrs:
+                if k in item:
+                    self._multi_indexes[k][item[k]].append(item)
+            self._delete_item_from_disk(register_item_id)
+            logger.debug(
+                "Charged item %s in %s from disk", register_item_id, self._ns
+            )
+            return item
+        return None
 
     def item_is_offloaded(self, register_item_id: str) -> bool:
         return register_item_id in self.offloaded_items

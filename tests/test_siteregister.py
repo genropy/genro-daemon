@@ -1596,3 +1596,352 @@ class TestSubscriptionStoreChanges:
         result = self.sr.subscription_storechanges("alice", "p1")
         # Result is a list of changes (may or may not include user store changes)
         assert isinstance(result, list)
+
+
+# ===========================================================================
+# Idle offloading — disk persistence (BaseRegister)
+# ===========================================================================
+
+
+def _make_page_register_with_persist_dir(tmp_path, sitename="testsite"):
+    """Return a (PageRegister, GnrSiteRegister) pair backed by disk persistence."""
+    sr = GnrSiteRegister(MagicMock(), sitename=sitename, backend=None)
+    sr.setConfiguration()
+    persist_dir = str(tmp_path / "offload")
+    sr.page_register.set_persist_dir(persist_dir)
+    return sr.page_register, sr
+
+
+class TestDiskOffloading:
+    def setup_method(self, tmp_path=None):
+        # tmp_path is injected per-test via pytest fixture; setup just stores nothing
+        pass
+
+    def _make_item(self, reg, item_id="p1"):
+        item = {
+            "register_item_id": item_id,
+            "pagename": "home.py",
+            "connection_id": "conn1",
+            "user": "alice",
+            "register_name": "page",
+            "subscribed_tables": set(),
+        }
+        reg.addRegisterItem(item)
+        return item
+
+    def test_offload_to_disk_removes_from_memory(self, tmp_path):
+        reg, _ = _make_page_register_with_persist_dir(tmp_path)
+        self._make_item(reg)
+        reg.offload_item("p1")
+        assert "p1" not in reg.registerItems
+        assert "p1" not in reg.offloaded_items  # disk, not in-memory cold store
+        # Disk file must exist
+        assert os.path.exists(reg._item_persist_path("p1"))
+
+    def test_charge_from_disk_restores_item(self, tmp_path):
+        reg, _ = _make_page_register_with_persist_dir(tmp_path)
+        self._make_item(reg)
+        reg.offload_item("p1")
+        # get_item triggers _charge_item via fallback
+        item = reg.get_item("p1")
+        assert item is not None
+        assert item["pagename"] == "home.py"
+        assert "p1" in reg.registerItems
+
+    def test_charge_from_disk_removes_disk_file(self, tmp_path):
+        reg, _ = _make_page_register_with_persist_dir(tmp_path)
+        self._make_item(reg)
+        reg.offload_item("p1")
+        disk_path = reg._item_persist_path("p1")
+        assert os.path.exists(disk_path)
+        reg.get_item("p1")  # charges from disk
+        assert not os.path.exists(disk_path)
+
+    def test_charge_from_disk_restores_bag_data(self, tmp_path):
+        reg, _ = _make_page_register_with_persist_dir(tmp_path)
+        self._make_item(reg)
+        reg.get_item_data("p1")["theme"] = "dark"
+        reg.offload_item("p1")
+        reg.get_item("p1")  # charges
+        assert reg.get_item_data("p1").getItem("theme") == "dark"
+
+    def test_charge_from_disk_restores_timestamp(self, tmp_path):
+        reg, _ = _make_page_register_with_persist_dir(tmp_path)
+        self._make_item(reg)
+        ts = datetime.datetime(2024, 6, 1, 12, 0)
+        reg.itemsTS["p1"] = ts
+        reg.offload_item("p1")
+        # Use _charge_item directly; get_item would overwrite TS via updateTS()
+        reg._charge_item("p1")
+        assert reg.itemsTS.get("p1") == ts
+
+    def test_drop_item_cleans_up_disk_file(self, tmp_path):
+        reg, _ = _make_page_register_with_persist_dir(tmp_path)
+        self._make_item(reg)
+        reg.offload_item("p1")
+        disk_path = reg._item_persist_path("p1")
+        assert os.path.exists(disk_path)
+        reg.drop_item("p1")
+        assert not os.path.exists(disk_path)
+
+    def test_drop_active_item_cleans_up_disk_if_present(self, tmp_path):
+        """drop_item on a hot item also removes any stale disk file for that id."""
+        reg, _ = _make_page_register_with_persist_dir(tmp_path)
+        self._make_item(reg)
+        # Manually write a disk file without offloading (simulate stale file)
+        reg._persist_item_to_disk("p1", reg.registerItems["p1"])
+        assert os.path.exists(reg._item_persist_path("p1"))
+        reg.drop_item("p1")
+        assert not os.path.exists(reg._item_persist_path("p1"))
+
+    def test_charge_nonexistent_disk_returns_none(self, tmp_path):
+        reg, _ = _make_page_register_with_persist_dir(tmp_path)
+        result = reg._charge_item("ghost")
+        assert result is None
+
+    def test_offload_idle_items_offloads_stale(self, tmp_path):
+        reg, _ = _make_page_register_with_persist_dir(tmp_path)
+        self._make_item(reg, "p1")
+        self._make_item(reg, "p2")
+        # Backdate p1's TS so it looks stale
+        reg.itemsTS["p1"] = datetime.datetime.now() - datetime.timedelta(seconds=400)
+        reg.itemsTS["p2"] = datetime.datetime.now()  # fresh
+        offloaded = reg.offload_idle_items(300)
+        assert "p1" in offloaded
+        assert "p2" not in offloaded
+        assert "p1" not in reg.registerItems
+        assert "p2" in reg.registerItems
+
+    def test_offload_idle_items_noop_when_disabled(self, tmp_path):
+        reg, _ = _make_page_register_with_persist_dir(tmp_path)
+        self._make_item(reg)
+        reg.itemsTS["p1"] = datetime.datetime.now() - datetime.timedelta(seconds=9999)
+        offloaded = reg.offload_idle_items(0)  # max_age_seconds=0 → disabled
+        assert offloaded == []
+        assert "p1" in reg.registerItems
+
+    def test_offload_idle_items_noop_without_persist_dir(self):
+        sr = GnrSiteRegister(MagicMock(), sitename="ts", backend=None)
+        sr.setConfiguration()
+        reg = sr.page_register
+        item = {
+            "register_item_id": "p1",
+            "register_name": "page",
+            "subscribed_tables": set(),
+        }
+        reg.addRegisterItem(item)
+        reg.itemsTS["p1"] = datetime.datetime.now() - datetime.timedelta(seconds=9999)
+        offloaded = reg.offload_idle_items(60)
+        # No persist_dir → items stay hot
+        assert offloaded == []
+        assert "p1" in reg.registerItems
+
+    def test_offload_idle_uses_start_ts_fallback(self, tmp_path):
+        """Items with no itemsTS entry fall back to start_ts for idle detection."""
+        reg, _ = _make_page_register_with_persist_dir(tmp_path)
+        item = {
+            "register_item_id": "p1",
+            "register_name": "page",
+            "subscribed_tables": set(),
+            "start_ts": datetime.datetime.now() - datetime.timedelta(seconds=400),
+        }
+        reg.addRegisterItem(item)
+        reg.itemsTS.pop("p1", None)  # no explicit TS
+        offloaded = reg.offload_idle_items(300)
+        assert "p1" in offloaded  # fell back to start_ts
+
+    def test_offload_idle_skips_items_with_no_ts_at_all(self, tmp_path):
+        """Items with neither itemsTS nor start_ts/last_refresh_ts are left alone."""
+        reg, _ = _make_page_register_with_persist_dir(tmp_path)
+        item = {
+            "register_item_id": "p1",
+            "register_name": "page",
+            "subscribed_tables": set(),
+            # no start_ts, no last_refresh_ts
+        }
+        reg.addRegisterItem(item)
+        reg.itemsTS.pop("p1", None)
+        offloaded = reg.offload_idle_items(1)
+        assert "p1" not in offloaded
+
+    def test_offload_in_memory_cold_store_without_persist_dir(self):
+        """When persist_dir is not set, offload_item falls back to offloaded_items."""
+        sr = GnrSiteRegister(MagicMock(), sitename="ts", backend=None)
+        sr.setConfiguration()
+        reg = sr.page_register
+        item = {
+            "register_item_id": "p1",
+            "register_name": "page",
+            "subscribed_tables": set(),
+        }
+        reg.addRegisterItem(item)
+        reg.offload_item("p1")
+        assert reg.item_is_offloaded("p1")
+        assert "p1" not in reg.registerItems
+        reg._charge_item("p1")
+        assert "p1" in reg.registerItems
+
+    def test_debug_log_on_offload_to_disk(self, tmp_path, caplog):
+        reg, _ = _make_page_register_with_persist_dir(tmp_path)
+        self._make_item(reg)
+        with caplog.at_level(logging.DEBUG, logger="gnr.web"):
+            reg.offload_item("p1")
+        assert any("ffloaded" in r.message and "p1" in r.message for r in caplog.records)
+
+    def test_debug_log_on_charge_from_disk(self, tmp_path, caplog):
+        reg, _ = _make_page_register_with_persist_dir(tmp_path)
+        self._make_item(reg)
+        reg.offload_item("p1")
+        with caplog.at_level(logging.DEBUG, logger="gnr.web"):
+            reg.get_item("p1")
+        assert any("harged" in r.message and "p1" in r.message for r in caplog.records)
+
+
+# ===========================================================================
+# dump_memory / load_memory — restart survival (GnrSiteRegister)
+# ===========================================================================
+
+
+def _make_sr_with_persist_dir(tmp_path):
+    persist_dir = str(tmp_path / "offload")
+    daemon = MagicMock()
+    sr = GnrSiteRegister(daemon, sitename="testsite", backend=None, persist_dir=persist_dir)
+    sr.setConfiguration()
+    return sr
+
+
+class TestMemoryDumpLoad:
+    def test_dump_memory_creates_disk_files(self, tmp_path):
+        sr = _make_sr_with_persist_dir(tmp_path)
+        sr.new_connection("c1", user="alice")
+        sr.new_page("p1", connection_id="c1", user="alice")
+        sr.dump_memory()
+        # At least user, connection, and page items should be on disk
+        user_path = sr.user_register._item_persist_path("alice")
+        conn_path = sr.connection_register._item_persist_path("c1")
+        page_path = sr.page_register._item_persist_path("p1")
+        assert os.path.exists(user_path)
+        assert os.path.exists(conn_path)
+        assert os.path.exists(page_path)
+
+    def test_load_memory_restores_items(self, tmp_path):
+        sr = _make_sr_with_persist_dir(tmp_path)
+        sr.new_connection("c1", user="alice")
+        sr.new_page("p1", connection_id="c1", user="alice")
+        sr.dump_memory()
+        # Simulate restart: create fresh GnrSiteRegister with same persist_dir
+        sr2 = GnrSiteRegister(
+            MagicMock(),
+            sitename="testsite",
+            backend=None,
+            persist_dir=str(tmp_path / "offload"),
+        )
+        sr2.setConfiguration()
+        sr2.load_memory()
+        assert sr2.user_register.exists("alice")
+        assert sr2.connection_register.exists("c1")
+        assert sr2.page_register.exists("p1")
+
+    def test_load_memory_removes_disk_files_after_load(self, tmp_path):
+        sr = _make_sr_with_persist_dir(tmp_path)
+        sr.new_connection("c1", user="alice")
+        sr.dump_memory()
+        page_path = sr.connection_register._item_persist_path("c1")
+        assert os.path.exists(page_path)
+        sr2 = GnrSiteRegister(
+            MagicMock(),
+            sitename="testsite",
+            backend=None,
+            persist_dir=str(tmp_path / "offload"),
+        )
+        sr2.setConfiguration()
+        sr2.load_memory()
+        assert not os.path.exists(page_path)
+
+    def test_load_memory_restores_item_data(self, tmp_path):
+        sr = _make_sr_with_persist_dir(tmp_path)
+        sr.new_connection("c1", user="alice")
+        conn_data = sr.connection_register.get_item_data("c1")
+        conn_data["theme"] = "dark"
+        sr.dump_memory()
+        sr2 = GnrSiteRegister(
+            MagicMock(),
+            sitename="testsite",
+            backend=None,
+            persist_dir=str(tmp_path / "offload"),
+        )
+        sr2.setConfiguration()
+        sr2.load_memory()
+        restored_data = sr2.connection_register.get_item_data("c1")
+        assert restored_data.getItem("theme") == "dark"
+
+    def test_dump_memory_noop_without_persist_dir(self):
+        sr = GnrSiteRegister(MagicMock(), sitename="ts", backend=None, persist_dir=None)
+        sr.setConfiguration()
+        sr.new_connection("c1", user="alice")
+        sr.dump_memory()  # must not raise; nothing is written
+
+    def test_load_memory_noop_without_persist_dir(self):
+        sr = GnrSiteRegister(MagicMock(), sitename="ts", backend=None, persist_dir=None)
+        sr.setConfiguration()
+        sr.load_memory()  # must not raise
+
+    def test_load_memory_noop_when_no_dir_on_disk(self, tmp_path):
+        """load_memory is safe even if the persist directory doesn't exist yet."""
+        persist_dir = str(tmp_path / "nonexistent_offload")
+        sr = GnrSiteRegister(
+            MagicMock(), sitename="ts", backend=None, persist_dir=persist_dir
+        )
+        sr.setConfiguration()
+        sr.load_memory()  # must not raise
+
+    def test_dump_memory_also_persists_offloaded_items(self, tmp_path):
+        """Items in in-memory cold store that lack a disk file are also dumped."""
+        sr = _make_sr_with_persist_dir(tmp_path)
+        sr.new_connection("c1", user="alice")
+        # Temporarily remove persist_dir so offload goes to in-memory cold store
+        orig = sr.connection_register._persist_dir
+        sr.connection_register._persist_dir = None
+        sr.connection_register.offload_item("c1")
+        sr.connection_register._persist_dir = orig
+        assert sr.connection_register.item_is_offloaded("c1")
+        sr.dump_memory()
+        assert os.path.exists(sr.connection_register._item_persist_path("c1"))
+
+
+# ===========================================================================
+# Idle offload configuration (GnrSiteRegister.setConfiguration)
+# ===========================================================================
+
+
+class TestIdleOffloadConfiguration:
+    def test_default_idle_offload_age_with_persist_dir(self, tmp_path):
+        from genro_daemon.siteregister import DEFAULT_IDLE_OFFLOAD_AGE
+
+        sr = _make_sr_with_persist_dir(tmp_path)
+        assert sr.idle_offload_age == DEFAULT_IDLE_OFFLOAD_AGE
+
+    def test_default_idle_offload_age_without_persist_dir(self):
+        sr = GnrSiteRegister(MagicMock(), sitename="ts", backend=None, persist_dir=None)
+        sr.setConfiguration()
+        assert sr.idle_offload_age == 0
+
+    def test_idle_offload_age_configurable(self, tmp_path):
+        sr = _make_sr_with_persist_dir(tmp_path)
+        sr.setConfiguration(cleanup={"idle_offload_age": 600})
+        assert sr.idle_offload_age == 600
+
+    def test_cleanup_triggers_idle_offload(self, tmp_path):
+        """cleanup() offloads items beyond idle_offload_age."""
+        sr = _make_sr_with_persist_dir(tmp_path)
+        sr.setConfiguration(cleanup={"idle_offload_age": 300, "interval": 0})
+        sr.new_connection("c1", user="alice")
+        sr.new_page("p1", connection_id="c1", user="alice")
+        # Make p1 look stale
+        sr.page_register.itemsTS["p1"] = (
+            datetime.datetime.now() - datetime.timedelta(seconds=400)
+        )
+        sr.last_cleanup = 0  # force cleanup to run
+        sr.cleanup()
+        assert not sr.page_register.exists("p1")
+        assert os.path.exists(sr.page_register._item_persist_path("p1"))

@@ -1,3 +1,4 @@
+import asyncio
 import os.path
 from multiprocessing import Process
 
@@ -13,6 +14,7 @@ from .client import GnrDaemonClient
 from .exceptions import GnrDaemonMethodNotFound, GnrDaemonProtoError
 from .siteregister import GnrSiteRegister
 from .storage import get_backend
+from .storage.memory import InMemoryBackend
 from .utils import load_daemon_options
 
 
@@ -159,15 +161,31 @@ class GnrDaemon(Ars):
         logger.info(
             "Site register backend for %r: %s", sitename, type(backend).__name__
         )
+        # Disk persistence for idle offloading and restart survival.
+        # Only meaningful for the in-memory backend; Redis persists server-side.
+        persist_dir = None
+        if isinstance(backend, InMemoryBackend):
+            if storage_path:
+                persist_dir = os.path.join(
+                    os.path.dirname(storage_path), "siteregister_offload"
+                )
+            else:
+                try:
+                    sitepath = PathResolver().site_name_to_path(sitename)
+                    persist_dir = os.path.join(sitepath, "siteregister_offload")
+                except Exception:
+                    pass
         register = GnrSiteRegister(
             self,
             sitename=sitename,
             storage_path=storage_path,
             backend=backend,
+            persist_dir=persist_dir,
         )
         register.setConfiguration()
         if autorestore and storage_path and os.path.exists(storage_path):
             register.load()
+        register.load_memory()
         self._siteregisters[sitename] = register
         logger.info(f"Site register created for {sitename!r}")
         m = metrics.get()
@@ -221,6 +239,10 @@ class GnrDaemon(Ars):
                     register.dump()
                 except Exception as e:
                     logger.error(f"Failed to dump register {k!r}: {e}")
+            try:
+                register.dump_memory()
+            except Exception as e:
+                logger.error(f"Failed to dump_memory for register {k!r}: {e}")
             for proc in self._service_processes.pop(k, {}).values():
                 if proc and proc.is_alive():
                     proc.terminate()
@@ -294,6 +316,37 @@ class GnrDaemon(Ars):
             if service.attr.get("daemon"):
                 proc = self.startServiceDaemon(sitename, service.label)
                 self._service_processes.setdefault(sitename, {})[service.label] = proc
+
+    async def _periodic_cleanup(self):
+        """Background task: drive cleanup() for every registered site.
+
+        Runs every 10 seconds; cleanup() itself is gated by each site's
+        ``cleanup_interval`` so the actual work fires at the configured rate.
+        """
+        poll_interval = 10
+        while True:
+            await asyncio.sleep(poll_interval)
+            for sitename, register in list(self._siteregisters.items()):
+                if not hasattr(register, "cleanup_interval"):
+                    continue
+                try:
+                    register.cleanup()
+                except Exception:
+                    logger.warning(
+                        "Periodic cleanup error for site %r", sitename, exc_info=True
+                    )
+
+    async def _start_server(self, *args, **kwargs):
+        """Override to launch the periodic cleanup task alongside the TCP server."""
+        cleanup_task = asyncio.create_task(self._periodic_cleanup())
+        try:
+            await super()._start_server(*args, **kwargs)
+        finally:
+            cleanup_task.cancel()
+            try:
+                await cleanup_task
+            except asyncio.CancelledError:
+                pass
 
     def _hasSysPackageAndIsPrimary(self, sitename):
         try:
