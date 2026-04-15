@@ -206,11 +206,15 @@ class SiteRegisterClient:
         pool_size = int(daemonconfig.get("pool_size") or self.DEFAULT_POOL_SIZE)
         logger.info(
             "Connecting to daemon at %s for site %r (pool_size=%d)",
-            daemon_uri, site.site_name, pool_size,
+            daemon_uri,
+            site.site_name,
+            pool_size,
         )
 
         # Single client; sitename is auto-injected into every call
-        self.siteregister = GnrDaemonClient(daemon_uri, sitename=site.site_name, pool_size=pool_size)
+        self.siteregister = GnrDaemonClient(
+            daemon_uri, sitename=site.site_name, pool_size=pool_size
+        )
         # Daemon-level client (no sitename) used by pages like onering.py
         self.gnrdaemon_proxy = GnrDaemonClient(daemon_uri, pool_size=pool_size)
 

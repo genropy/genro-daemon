@@ -485,7 +485,6 @@ class TestGnrSiteRegister:
         assert result is not None
 
     def test_on_site_stop_logs(self, caplog):
-
         with caplog.at_level(logging.INFO):
             self.sr.on_site_stop()
 
@@ -1335,7 +1334,6 @@ class TestGnrSiteRegisterAdditional:
 
 class TestServerStore:
     def setup_method(self):
-
         self.sr = make_site_register()
         self.sr.new_connection("c1", user="alice")
         self.ServerStore = ServerStore
@@ -1429,7 +1427,6 @@ class TestServerStore:
 
 class TestRemoteStoreBagHandler:
     def setup_method(self):
-
         self.sr = make_site_register()
         self.sr.new_connection("c1", user="alice")
         self.handler = RemoteStoreBagHandler(self.sr)
@@ -1480,7 +1477,6 @@ class TestRemoteStoreBagHandler:
 
 class TestRemoteStoreBag:
     def setup_method(self):
-
         self.mock_client = MagicMock()
         self.mock_client._invoke_method.return_value = "ok"
         self.bag = RemoteStoreBag(self.mock_client, "page", "p1")
@@ -1786,7 +1782,9 @@ class TestDiskOffloading:
         self._make_item(reg)
         with caplog.at_level(logging.DEBUG, logger="gnr.web"):
             reg.offload_item("p1")
-        assert any("ffloaded" in r.message and "p1" in r.message for r in caplog.records)
+        assert any(
+            "ffloaded" in r.message and "p1" in r.message for r in caplog.records
+        )
 
     def test_debug_log_on_charge_from_disk(self, tmp_path, caplog):
         reg, _ = _make_page_register_with_persist_dir(tmp_path)
@@ -1805,7 +1803,9 @@ class TestDiskOffloading:
 def _make_sr_with_persist_dir(tmp_path):
     persist_dir = str(tmp_path / "offload")
     daemon = MagicMock()
-    sr = GnrSiteRegister(daemon, sitename="testsite", backend=None, persist_dir=persist_dir)
+    sr = GnrSiteRegister(
+        daemon, sitename="testsite", backend=None, persist_dir=persist_dir
+    )
     sr.setConfiguration()
     return sr
 
@@ -1938,8 +1938,8 @@ class TestIdleOffloadConfiguration:
         sr.new_connection("c1", user="alice")
         sr.new_page("p1", connection_id="c1", user="alice")
         # Make p1 look stale
-        sr.page_register.itemsTS["p1"] = (
-            datetime.datetime.now() - datetime.timedelta(seconds=400)
+        sr.page_register.itemsTS["p1"] = datetime.datetime.now() - datetime.timedelta(
+            seconds=400
         )
         sr.last_cleanup = 0  # force cleanup to run
         sr.cleanup()

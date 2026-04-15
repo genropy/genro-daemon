@@ -39,7 +39,7 @@ DEFAULT_CLEANUP_INTERVAL: int = 120
 DEFAULT_PAGE_MAX_AGE: int = 120
 DEFAULT_GUEST_CONNECTION_MAX_AGE: int = 40
 DEFAULT_CONNECTION_MAX_AGE: int = 600
-DEFAULT_IDLE_OFFLOAD_AGE: int = 10 #1800
+DEFAULT_IDLE_OFFLOAD_AGE: int = 10  # 1800
 
 LOCK_MAX_RETRY: int = 50
 LOCK_EXPIRY_SECONDS: int = 10
@@ -98,9 +98,7 @@ class BaseRegister:
         storable = {k: v for k, v in item.items() if k not in _LIVE_FIELDS}
         self._backend.hset(self._ns, str(register_item_id), storable)
 
-    def _setup_live_fields(
-        self, item: dict, existing_data: Bag | None = None
-    ) -> None:
+    def _setup_live_fields(self, item: dict, existing_data: Bag | None = None) -> None:
         """Add live fields to a register item and wire its itemsData Bag.
 
         *existing_data* may be passed when restoring a previously persisted item
@@ -237,9 +235,7 @@ class BaseRegister:
                 self.offload_item(register_item_id)
                 offloaded.append(register_item_id)
         if offloaded:
-            logger.debug(
-                "Offloaded %d idle item(s) from %s", len(offloaded), self._ns
-            )
+            logger.debug("Offloaded %d idle item(s) from %s", len(offloaded), self._ns)
         return offloaded
 
     def dump_all_to_disk(self) -> int:
@@ -561,9 +557,7 @@ class BaseRegister:
                 if k in item:
                     self._multi_indexes[k][item[k]].append(item)
             self._delete_item_from_disk(register_item_id)
-            logger.debug(
-                "Charged item %s in %s from disk", register_item_id, self._ns
-            )
+            logger.debug("Charged item %s in %s from disk", register_item_id, self._ns)
             return item
         return None
 
