@@ -194,6 +194,7 @@ class SiteRegisterClient:
     """
 
     STORAGE_PATH = "siteregister_data.pik"
+    DEFAULT_POOL_SIZE = 16
 
     def __init__(self, site):
         self.locked_exception = GnrDaemonLocked
@@ -202,14 +203,16 @@ class SiteRegisterClient:
 
         daemonconfig = self.site.config.getAttr("gnrdaemon")
         daemon_uri = "gnr://{host}:{port}".format(**daemonconfig)
+        pool_size = int(daemonconfig.get("pool_size") or self.DEFAULT_POOL_SIZE)
         logger.info(
-            "Connecting to daemon at %s for site %r", daemon_uri, site.site_name
+            "Connecting to daemon at %s for site %r (pool_size=%d)",
+            daemon_uri, site.site_name, pool_size,
         )
 
         # Single client; sitename is auto-injected into every call
-        self.siteregister = GnrDaemonClient(daemon_uri, sitename=site.site_name)
+        self.siteregister = GnrDaemonClient(daemon_uri, sitename=site.site_name, pool_size=pool_size)
         # Daemon-level client (no sitename) used by pages like onering.py
-        self.gnrdaemon_proxy = GnrDaemonClient(daemon_uri)
+        self.gnrdaemon_proxy = GnrDaemonClient(daemon_uri, pool_size=pool_size)
 
         # Ensure the register namespace exists in the daemon
         self._register_with_daemon(autorestore=True)

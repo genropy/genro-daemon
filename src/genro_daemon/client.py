@@ -30,6 +30,8 @@ class _ConnectionPool:
 
     def _new_socket(self) -> socket.socket:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         sock.settimeout(self._timeout)
         sock.connect((self._host, self._port))
         return sock
@@ -147,7 +149,9 @@ class GnrDaemonClient:
             kw["_sitename"] = self._sitename
         r = self._send([0, self._req_counter, method, args, kw])
         if r is None:
-            return None
+            raise ConnectionError(
+                f"No response from daemon at {self._host}:{self._port} for method '{method}'"
+            )
         if r[0] == -1:
             error_info = r[2]
             if (
