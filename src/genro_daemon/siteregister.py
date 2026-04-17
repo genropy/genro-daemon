@@ -158,9 +158,8 @@ class GnrSiteRegister:
         avatar_extra: Any | None = None,
         electron_static: Any | None = None,
     ) -> dict:
-        assert not self.connection_register.exists(connection_id), (
-            f"SITEREGISTER ERROR: connection_id {connection_id} already registered"
-        )
+        if self.connection_register.exists(connection_id):
+            self.drop_connection(connection_id)
         if not self.user_register.exists(user):
             self.new_user(
                 user,

@@ -30,6 +30,8 @@ class _ConnectionPool:
 
     def _new_socket(self) -> socket.socket:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         sock.settimeout(self._timeout)
         sock.connect((self._host, self._port))
         return sock
@@ -99,7 +101,7 @@ class GnrDaemonClient:
         url="gnr://127.0.0.1:40404",
         timeout=3,
         sitename=None,
-        pool_size=None,
+        pool_size=8,
         **kwargs,
     ):
         options = kwargs
@@ -117,10 +119,8 @@ class GnrDaemonClient:
         self._timeout = timeout
         self._req_counter = 0
         self._sitename = sitename  # namespace sent with every call when set
-        self._pool = (
-            _ConnectionPool(self._host, self._port, timeout, max_idle=pool_size)
-            if pool_size
-            else None
+        self._pool = _ConnectionPool(
+            self._host, self._port, timeout, max_idle=pool_size or 8
         )
 
     def __getattr__(self, method):
@@ -191,24 +191,6 @@ class GnrDaemonClient:
     def _send(self, data):
         self._req_counter += 1
         packed_data = msgpack.packb(data, default=_msgpack_default, use_bin_type=True)
-
-        if self._pool:
-            return self._send_pooled(packed_data)
-
-        # One-shot: open, use, close
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(self._timeout)
-            try:
-                sock.connect((self._host, self._port))
-            except Exception as e:
-                logger.error(
-                    f"Error connecting to daemon at {self._host}:{self._port}: {e}"
-                )
-                return None
-            sock.sendall(packed_data)
-            return self._recv(sock)
-
-    def _send_pooled(self, packed_data):
         sock = None
         try:
             sock = self._pool.acquire()
