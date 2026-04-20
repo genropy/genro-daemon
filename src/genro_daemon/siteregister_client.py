@@ -7,7 +7,7 @@ from gnr.core.gnrbag import Bag
 from gnr.web import logger
 
 from .client import GnrDaemonClient
-from .exceptions import GnrDaemonLocked, GnrDaemonMethodNotFound
+from .exceptions import GnrDaemonLocked, GnrDaemonMethodNotFound, GnrDaemonUnavailable
 
 LOCK_MAX_RETRY = 50
 RETRY_DELAY = 0.05  # initial delay; doubles each retry up to RETRY_DELAY_MAX
@@ -113,8 +113,8 @@ class ServerStore:
 
     @property
     def data(self):
-        if self.register_item:
-            return self.register_item["data"]
+        item = self.register_item
+        return item.get("data") if item else None
 
     @property
     def datachanges(self):
@@ -260,6 +260,10 @@ class SiteRegisterClient:
             relative_url=page.request.path_info,
             data=data,
         )
+        if register_item is None:
+            raise GnrDaemonUnavailable(
+                f"Daemon did not respond while registering page {page_id!r}"
+            )
         self._add_data_to_register_item(register_item)
         return register_item
 
@@ -277,6 +281,10 @@ class SiteRegisterClient:
             avatar_extra=connection.avatar_extra,
             electron_static=connection.electron_static,
         )
+        if register_item is None:
+            raise GnrDaemonUnavailable(
+                f"Daemon did not respond while registering connection {connection_id!r}"
+            )
         self._add_data_to_register_item(register_item)
         return register_item
 
@@ -426,6 +434,8 @@ class SiteRegisterClient:
         }
 
     def _add_data_to_register_item(self, register_item):
+        if register_item is None:
+            return None
         register_item["data"] = RemoteStoreBag(
             self.siteregister,
             register_item["register_name"],

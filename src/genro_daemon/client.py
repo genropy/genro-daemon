@@ -92,7 +92,9 @@ class _SiteRegisterProxyContext:
         return self._client
 
     def __exit__(self, *args):
-        self._client = None
+        if self._client is not None:
+            self._client.close()
+            self._client = None
 
 
 class GnrDaemonClient:
@@ -122,6 +124,10 @@ class GnrDaemonClient:
         self._pool = _ConnectionPool(
             self._host, self._port, timeout, max_idle=pool_size or 8
         )
+
+    def close(self) -> None:
+        """Close all idle sockets in the pool."""
+        self._pool.close()
 
     def __getattr__(self, method):
         return lambda *args, **kw: self._invoke_method(method, *args, **kw)
@@ -163,46 +169,69 @@ class GnrDaemonClient:
         return r[3]
 
     def _recv(self, sock: socket.socket):
+        """Read one msgpack response.  Returns None on EOF or timeout (safe to retry)."""
         chunks = []
         while True:
             try:
                 chunk = sock.recv(4096)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                try:
-                    return msgpack.unpackb(
-                        b"".join(chunks),
-                        raw=False,
-                        object_hook=_msgpack_object_hook,
-                    )
-                except msgpack.exceptions.UnpackValueError:
-                    continue
             except TimeoutError:
-                break
+                break  # server did not respond in time — caller may retry
+            if not chunk:
+                return None  # EOF: server closed the connection
+            chunks.append(chunk)
+            try:
+                return msgpack.unpackb(
+                    b"".join(chunks),
+                    raw=False,
+                    object_hook=_msgpack_object_hook,
+                )
+            except msgpack.exceptions.ExtraData:
+                # Framing confusion (stale bytes from a reused socket).  Treat
+                # the socket as unusable so the caller discards and retries.
+                return None
+            except msgpack.exceptions.UnpackValueError:
+                continue  # incomplete message, read more
+        # Timeout path: try to parse whatever arrived before the deadline.
         if chunks:
-            return msgpack.unpackb(
-                b"".join(chunks),
-                raw=False,
-                object_hook=_msgpack_object_hook,
-            )
+            try:
+                return msgpack.unpackb(
+                    b"".join(chunks),
+                    raw=False,
+                    object_hook=_msgpack_object_hook,
+                )
+            except (msgpack.exceptions.ExtraData, msgpack.exceptions.UnpackValueError):
+                pass
         return None
 
     def _send(self, data):
         self._req_counter += 1
         packed_data = msgpack.packb(data, default=_msgpack_default, use_bin_type=True)
+        return self._send_pooled(packed_data)
+
+    def _send_pooled(self, packed_data):
         sock = None
         try:
             sock = self._pool.acquire()
-            sock.sendall(packed_data)
+            try:
+                sock.sendall(packed_data)
+            except OSError:
+                # Pool socket was closed by the server (idle timeout / RST).
+                # Discard and retry once on a fresh connection — the request
+                # was never received so the retry is always safe.
+                self._pool.discard(sock)
+                sock = self._pool._new_socket()
+                sock.sendall(packed_data)
             response = self._recv(sock)
             if response is None:
-                # Connection closed by server; discard and retry once with a fresh socket
+                # EOF or timeout from _recv — retry once on a fresh socket.
                 self._pool.discard(sock)
                 sock = self._pool._new_socket()
                 sock.sendall(packed_data)
                 response = self._recv(sock)
-            self._pool.release(sock)
+            if response is None:
+                self._pool.discard(sock)
+            else:
+                self._pool.release(sock)
             return response
         except Exception as e:
             if sock is not None:

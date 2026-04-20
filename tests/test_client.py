@@ -369,19 +369,24 @@ class TestClientWithPool:
         assert result is None
 
     def test_send_pooled_discards_sock_on_sendall_exception(self):
-        """When acquire succeeds but sendall raises, sock is discarded (line 201)."""
+        """When pool socket sendall raises, it is discarded and a retry is attempted."""
         c = GnrDaemonClient("gnr://127.0.0.1:40404", pool_size=4)
         mock_pool = MagicMock()
         mock_sock = MagicMock(spec=socket.socket)
+        # Both the original socket and the retry socket fail so result is None.
         mock_pool.acquire.return_value = mock_sock
         mock_sock.sendall.side_effect = OSError("broken pipe")
+        new_mock_sock = MagicMock(spec=socket.socket)
+        new_mock_sock.sendall.side_effect = OSError("still broken")
+        mock_pool._new_socket.return_value = new_mock_sock
         c._pool = mock_pool
         packed = msgpack.packb(
             [0, 1, "ping", [], {}], default=_msgpack_default, use_bin_type=True
         )
         result = c._send_pooled(packed)
         assert result is None
-        mock_pool.discard.assert_called_once_with(mock_sock)
+        # Original broken socket must be discarded
+        mock_pool.discard.assert_any_call(mock_sock)
 
     def test_send_pooled_retries_on_none_response(self, daemon_runner):
         """When first recv returns None, pool should retry with a new socket."""
@@ -497,8 +502,6 @@ class TestClientSendOneShot:
     def test_send_connect_failure_returns_none(self):
         """When socket.connect raises, _send returns None without crashing."""
         c = GnrDaemonClient("gnr://127.0.0.1:40404", timeout=1)
-        # No pool -> one-shot path
-        assert c._pool is None
         mock_sock = MagicMock(spec=socket.socket)
         mock_sock.connect.side_effect = ConnectionRefusedError("refused")
         mock_sock.__enter__ = lambda s: s

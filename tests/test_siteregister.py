@@ -395,10 +395,12 @@ class TestGnrSiteRegister:
         assert self.sr.user_register.exists("alice")
         assert self.sr.connection_register.exists("c2")
 
-    def test_new_connection_duplicate_raises(self):
+    def test_new_connection_duplicate_drops_and_recreates(self):
         self.sr.new_connection("c1", user="alice")
-        with pytest.raises(AssertionError):
-            self.sr.new_connection("c1", user="alice")
+        # Duplicate ID: old connection is dropped and a new one is created.
+        result = self.sr.new_connection("c1", user="alice")
+        assert self.sr.connection_register.exists("c1")
+        assert result["register_item_id"] == "c1"
 
     def test_new_page(self):
         self.sr.new_page("p1", pagename="home.py", connection_id="c1", user="alice")

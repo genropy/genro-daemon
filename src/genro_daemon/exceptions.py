@@ -26,9 +26,18 @@ class GnrDaemonMethodNotFound(Exception):
     """
 
 
+class GnrDaemonUnavailable(GnrDaemonException):
+    """Raised when the daemon did not respond (timeout or connection error).
+
+    The operation was not completed.  The caller should surface this as a
+    transient error (e.g. HTTP 503) rather than silently returning None.
+    """
+
+
 __all__ = [
     "GnrDaemonProtoError",
     "GnrDaemonMethodNotFound",
     "GnrDaemonException",
     "GnrDaemonLocked",
+    "GnrDaemonUnavailable",
 ]

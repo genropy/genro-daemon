@@ -107,8 +107,7 @@ class Ars:
                 try:
                     reqs = await connection.recv(self._recv_timeout)
                 except TimeoutError:
-                    await asyncio.sleep(2)
-                    logger.warning("Not receiving data from client.")
+                    logger.debug("Idle connection from %s closed after timeout.", connection.peer)
                     connection.close()
                     await channel_out.wait_closed()
                     continue
