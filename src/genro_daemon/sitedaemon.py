@@ -6,7 +6,7 @@ import uvloop
 
 uvloop.install()
 
-from gnr.app.gnrdeploy import PathResolver  # noqa: E402
+from gnr.app.pathresolver import PathResolver  # noqa: E402
 from gnr.core.gnrbag import Bag  # noqa: E402
 from gnr.web import logger  # noqa: E402
 

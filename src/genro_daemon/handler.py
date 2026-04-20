@@ -3,7 +3,7 @@ from multiprocessing import Process
 
 # to be updated when the namespace rearrange for pathresolver
 # hit master/release
-from gnr.app.gnrdeploy import PathResolver
+from gnr.app.pathresolver import PathResolver
 from gnr.core.gnrlang import gnrImport
 from gnr.web import logger
 
