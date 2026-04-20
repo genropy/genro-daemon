@@ -60,7 +60,9 @@ class _DaemonRunner:
 
     def stop(self):
         if self._loop and not self._loop.is_closed():
-            future = asyncio.run_coroutine_threadsafe(self._async_shutdown(), self._loop)
+            future = asyncio.run_coroutine_threadsafe(
+                self._async_shutdown(), self._loop
+            )
             try:
                 future.result(timeout=5)
             except Exception:

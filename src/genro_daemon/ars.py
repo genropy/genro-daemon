@@ -107,7 +107,9 @@ class Ars:
                 try:
                     reqs = await connection.recv(self._recv_timeout)
                 except TimeoutError:
-                    logger.debug("Idle connection from %s closed after timeout.", connection.peer)
+                    logger.debug(
+                        "Idle connection from %s closed after timeout.", connection.peer
+                    )
                     connection.close()
                     await channel_out.wait_closed()
                     continue
