@@ -42,6 +42,7 @@ dependencies = [
 [project.optional-dependencies]
 redis = ["redis>=5.0"]
 prometheus = ["prometheus-client>=0.16.0"]
+dev = ["pytest", "pytest-asyncio", "pytest-aiohttp", "pytest-cov", "pytest-timeout"]
 
 [project.entry-points."gnr.web"]
 daemon = "genro_daemon"

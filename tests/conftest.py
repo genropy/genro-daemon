@@ -59,11 +59,25 @@ class _DaemonRunner:
             await server.serve_forever()
 
     def stop(self):
-        if self._loop and self._daemon._server:
-            self._loop.call_soon_threadsafe(self._daemon._server.close)
-            self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._loop and not self._loop.is_closed():
+            future = asyncio.run_coroutine_threadsafe(self._async_shutdown(), self._loop)
+            try:
+                future.result(timeout=5)
+            except Exception:
+                pass
         if self._thread:
             self._thread.join(timeout=3)
+        if self._loop and not self._loop.is_closed():
+            self._loop.close()
+
+    async def _async_shutdown(self):
+        if self._daemon._server:
+            self._daemon._server.close()
+        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._loop.stop()
 
     # -- convenience --------------------------------------------------------
 
