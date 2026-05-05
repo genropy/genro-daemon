@@ -5,7 +5,7 @@ web framework.  It replaces the legacy Pyro4-based daemon with a
 modern asyncio + uvloop stack using msgpack for efficient binary
 serialisation.
 
-It's design as a drop-in replacement for the old daemon. It needs
+It's designed as a drop-in replacement for the old daemon. It needs
 genropy installed. Once you install this package, it's going to
 replace the 'gnr.web.daemon' with the new implementation, so switching
 from the old to the new it's transparente. By *disinstalling*
@@ -84,10 +84,10 @@ See [`docs/environment-variables.md`](docs/environment-variables.md) for the ful
 
 ## Storage backends
 
-| Backend | URL format | Use case |
-|---------|-----------|----------|
-| In-memory (default) | `memory:` | Single-process, no persistence |
-| Redis | `redis://host:port/db` | Multi-process, persistence, HA |
+| Backend             | URL format             | Use case                       |
+|---------------------|------------------------|--------------------------------|
+| In-memory (default) | `memory:`              | Single-process, no persistence |
+| Redis               | `redis://host:port/db` | Multi-process, persistence, HA |
 
 Set via the `GNR_DAEMON_STORE` environment variable or the `store` key in `environment.xml`.
 
@@ -106,10 +106,10 @@ A ready-made Grafana dashboard is documented in [`docs/grafana-dashboard.md`](do
 
 Reference benchmarks on a single process with in-memory backend:
 
-| Scenario | Throughput | p99 latency |
-|----------|-----------|-------------|
-| 1 client, sequential | ~4,500 req/s | ~0.4 ms |
-| 10 clients, concurrent | ~6,300 req/s | ~3 ms |
+| Scenario               | Throughput   | p99 latency |
+|------------------------|--------------|-------------|
+| 1 client, sequential   | ~4,500 req/s | ~0.4 ms     |
+| 10 clients, concurrent | ~6,300 req/s | ~3 ms       |
 
 See [`docs/benchmarking.md`](docs/benchmarking.md) for full methodology and results.
 
