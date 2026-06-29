@@ -210,6 +210,14 @@ class PageRegister(BaseRegister):
         cascade: bool = False,
         _testing: bool = False,
     ) -> None:
+        
+        item = self.get_item(register_item_id)
+        subscribed = item['subscribed_tables'] if item else []
+        for table in subscribed:
+            lst = self._subscribed_table_index.get(table)
+            if lst and register_item_id in lst:
+                lst.remove(register_item_id)
+                
         register_item = self.drop_item(register_item_id)
         self.pageProfilers.pop(register_item_id, None)
         if cascade and register_item:
@@ -232,7 +240,8 @@ class PageRegister(BaseRegister):
         ]
 
     def subscribed_table_pages(self, table: str) -> list[dict]:
-        return [self.get_item(x) for x in self._subscribed_table_index.get(table, [])]
+        return [p for p in (self.get_item(x)
+                for x in self._subscribed_table_index.get(table, [])) if p is not None]
 
     def connection_page_keys(self, connection_id: str) -> list[str]:
         return [
