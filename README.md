@@ -6,11 +6,12 @@ modern asyncio + uvloop stack using msgpack for efficient binary
 serialisation.
 
 It's designed as a drop-in replacement for the old daemon. It needs
-genropy installed. Once you install this package, it's going to
-replace the 'gnr.web.daemon' with the new implementation, so switching
-from the old to the new it's transparente. By *disinstalling*
-genro-daemon, you'll be able to continue to use the old
-implementation.
+genropy installed. Once you install this package, it's available to be
+used by genropy by setting the env var `GNR_DAEMON_PROVIDER` to
+'genro_daemon' value. It's going to replace the 'gnr.web.daemon' with
+the new implementation, so switching from the old to the new it's
+transparent. By unsetting the `GNR_DAEMON_PROVIDER` env var, you'll be
+able to continue to use the old implementation.
 
 ## Features
 
